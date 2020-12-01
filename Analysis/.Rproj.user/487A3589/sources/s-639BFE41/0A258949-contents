@@ -1,0 +1,30 @@
+library(NNLM)
+
+#input variables here
+experiment_name<-"mPantr2_scRNAseq_neurospheres"
+exprs_location<-"../Assets/exprs_matrix.mtx"
+nPatterns<-50
+nPattern_step<-10 #replace with 0 if you only want to run once
+rel.tol<- 1e-20
+max.iter<-100000L
+seed<-42
+outdir<-"../NMF/outs/"
+
+#Do not touch the code below
+set.seed(seed)
+#dir.create(outdir)
+invisible(ifelse(nPattern_step==0, pattern_nums<-nPatterns, pattern_nums<-seq(from=nPattern_step, to=nPatterns, by=nPattern_step)))
+matrix<-read.table(exprs_location)
+matrix<-as.matrix(matrix)
+matrix<-log10(matrix + 1) #add a pseudocount and log transform
+
+for(i in pattern_nums){ 
+    #run nmf
+    result<-nnmf(matrix, i, rel.tol, max.iter)
+    #give the NMF object a more meaningful name
+    assign(paste0("result_",i,"_patterns"),result)
+    #save the NMF object
+    do.call(save, list(paste0("result_",i,"_patterns"), file=paste0(outdir, experiment_name, "_result_",i, "_patterns.RData")))
+    gc() #clean up!!!
+}
+#this can be run in parallel for increased speed with `mclapply`, however I'd like use of my computer while this is computing so I decided to do this serially with a `for loop`

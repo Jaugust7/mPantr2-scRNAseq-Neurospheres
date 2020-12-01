@@ -1,0 +1,25 @@
+{
+    "id": "6C44857A",
+    "path": "~/Desktop/mPantr2 scRNAseq Neurospheres/Analysis/mPantr2KO neurospheres.Rmd",
+    "project_path": "mPantr2KO neurospheres.Rmd",
+    "type": "r_markdown",
+    "hash": "1602605792",
+    "contents": "",
+    "dirty": false,
+    "created": 1606795374820.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "chunk_output_type": "console",
+        "cursorPosition": "300,34",
+        "scrollLine": "285"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1606799341,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1606799341282,
+    "read_only": false,
+    "read_only_alternatives": []
+}

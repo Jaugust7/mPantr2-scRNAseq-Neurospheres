@@ -1,0 +1,265 @@
+---
+title: "mPantr2 KO neurosphere"
+author: "Jonathan Augustin"
+date: "10/11/2018"
+output: html_document
+---
+
+```{r load libraries, include=FALSE, tidy=TRUE}
+library(monocle3)
+library(tidyverse)
+library(scran)
+library(magrittr)
+library(data.table)
+library(broom)
+library(knitr)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(NNLM)
+```
+
+```{r create CDS object, tidy=TRUE}
+#import data from 10X genomeranger output
+dat<-load_cellranger_data("~/../../Volumes/Augustin/R Projects/mPantr2 scRNAseq Neurospheres/10X Aggregated Run/bwiner2_149915")
+
+#add clone information
+pData(dat)$clone <- rep("blank")
+pData(dat)[grep("*-1" , pData(dat)$barcode),]$clone<-"AW1"
+pData(dat)[grep("*-2" , pData(dat)$barcode),]$clone<-"AW2"
+pData(dat)[grep("*-3" , pData(dat)$barcode),]$clone<-"AX1"
+pData(dat)[grep("*-4" , pData(dat)$barcode),]$clone<-"AX2"
+
+pData(dat)$cell_id<-rownames(pData(dat))
+
+#add genotype information
+pData(dat)$genotype <-rep("blank")
+pData(dat)[pData(dat)$clone %in% c("AW1", "AW2"),]$genotype <- "Pantr2_KO"
+pData(dat)[pData(dat)$clone %in% c("AX1", "AX2"),]$genotype <- "WT"
+
+#add sex information
+pData(dat)$sex <-rep("blank")
+pData(dat)[pData(dat)$clone %in% c("AW1", "AX1", "AX2"),]$sex <- "female"
+pData(dat)[pData(dat)$clone %in% c("AW2"),]$sex <- "male"
+
+#add batch information
+pData(dat)$batch <- rep("blank")
+pData(dat)[pData(dat)$clone %in% c("AW1", "AX1"),]$batch <- "batch_1"
+pData(dat)[pData(dat)$clone %in% c("AW2", "AX2"),]$batch <- "batch_2"
+
+#use cyclone to assign cell cycle phase for NPCs
+mm.pairs <- readRDS(system.file("exdata", "mouse_cycle_markers.rds", package="scran"))
+assigned <- cyclone(as.matrix(exprs(dat)), pairs=mm.pairs)
+pData(dat)$cell_cyc<-assigned$phases
+
+#Add total mRNAs column to pData
+pData(dat)$Total_mRNAs <- colSums(as.matrix(exprs(dat)))
+dat<-detect_genes(dat, min_expr = 0.1)
+
+#choose the number of PCs to use for downstream analaysis
+dat <- preprocess_cds(dat, num_dim = 100, residual_model_formula_str = "~ batch + Total_mRNAs + sex")
+plot_pc_variance_explained(dat)
+dat <- reduce_dimension(dat)
+dat <- cluster_cells(dat)
+
+#filter out strange cells
+dat.cds<-choose_cells(dat)
+
+#choose the number of PCs to use for downstream analaysis
+dat.cds <- preprocess_cds(dat.cds, num_dim = 100, residual_model_formula_str = "~ batch + Total_mRNAs + sex")
+plot_pc_variance_explained(dat.cds)
+dat.cds <- reduce_dimension(dat.cds)
+dat.cds <- cluster_cells(dat.cds)
+
+#dat <- learn_graph(dat)
+#dat <- order_cells(dat)
+
+#Plot UMAPs for the subsetted cds
+pdf("~/Desktop/mPantr2 scRNAseq Neurospheres/Plots/cell_cycle_umap.pdf", height = 6, width = 8)
+plot_cells(dat.cds, color_cells_by = "cell_cyc", label_cell_groups = FALSE, show_trajectory_graph = FALSE)
+dev.off()
+
+pdf("~/Desktop/mPantr2 scRNAseq Neurospheres/Plots/genotype_umap.pdf", height = 6, width = 8)
+plot_cells(dat.cds, color_cells_by = "genotype", label_cell_groups = FALSE, show_trajectory_graph = FALSE) + facet_wrap(~ genotype)
+dev.off()
+
+pdf("~/Desktop/mPantr2 scRNAseq Neurospheres/Plots/sex_umap.pdf", height = 6, width = 8)
+plot_cells(dat.cds, color_cells_by = "sex", label_cell_groups = FALSE, show_trajectory_graph = FALSE)
+dev.off()
+
+plot_cells(dat.cds, show_trajectory_graph = FALSE, genes = c("Rgcc", "Tubb3", "Hes1", "Dcx", "Dll3", "Mdm3", "Ube2c", "Ccne1", "Ccnd1", "Ccnb1", "Rbpj"), label_cell_groups = FALSE)
+
+#Test plots for different genes
+plot_cells(dat.cds, show_trajectory_graph = FALSE, genes =c("Rgcc"), label_cell_groups = FALSE) + facet_wrap(~ genotype)
+
+s#find marker genes to aid with annotations
+marker_test <- top_markers(dat.cds, group_cells_by="cluster", reference_cells=1000, cores=2)
+
+plot_genes_by_group(dat.cds,
+                    marker_test,
+                    group_cells_by="cluster",
+                    ordering_type="maximal_on_diag",
+                    max.size=3)
+
+top_specific_markers <- marker_test %>% group_by(cell_group) %>% top_n(1, pseudo_R2)
+
+top_specific_marker_ids = unique(top_specific_markers %>% pull(gene_id))
+
+#Differential gene test
+gene_fits = fit_models(dat.cds, model_formula_str = "~genotype + batch + sex", expression_family = "negbinomial", cores = 1)
+fit_coefs = coefficient_table(gene_fits)
+diff.genes<-fit_coefs %>% filter(term != "(Intercept)") %>%
+  select(gene_short_name, term, q_value, estimate)
+
+diff.genes<-diff.genes[diff.genes$q_value < 0.000000000000000000000000000000001,] %>% filter(term == "genotypeWT")
+
+write.table(diff.genes, "~/Desktop/mPantr2 scRNAseq Neurospheres/Tables/diff_genes.txt")
+
+cds_subset<-dat.cds[fData(dat.cds)$gene_short_name %in% c("Dpy30", "Ash2l", "Hes1", "Rgcc", "Hes6", "Trp53", "Malat1", "Notch1")]
+
+plot_genes_violin(cds_subset, group_cells_by="genotype", ncol=4) +
+    theme(axis.text.x=element_text(angle=45, hjust=1))
+
+```
+
+```{r GO analysis, tidy=TRUE}
+#import EntrezIDs for all differentially expressed genes
+p2_wt <- bitr(diff.genes$gene_short_name, fromType = "SYMBOL", toType = "ENTREZID", OrgDb="org.Mm.eg.db")
+p2_wt_ids <- p2_wt$ENTREZID
+
+#GO analysis for biological processes for all differentially expressed genes
+p2_wt_go <- enrichGO(p2_wt_ids, "org.Mm.eg.db", keyType = "ENTREZID", ont = "BP", readable = TRUE)
+pdf("../Plots/mPantr2 all DEG genes BP GO.pdf", width = 10, height = 5)
+barplot(p2_wt_go, drop=TRUE, showCategory=20)
+dev.off()
+dotplot(p2_wt_go)
+enrichMap(p2_wt_go, n=20, fixed = TRUE, vertex.label.font = 1, vertex.label.cex = 0.3)
+plotGOgraph(p2_wt_go)
+
+write.table(as.data.frame(p2_wt_go),"p2_go_summary.txt", sep="\t")
+
+#import EntrezIDS for genes upregulated in mPantr2 KO
+p2_up <- bitr(diff.genes[diff.genes$estimate < 0,]$gene_short_name, fromType = "SYMBOL", toType = "ENTREZID", OrgDb="org.Mm.eg.db")
+p2_up_ids <- p2_up$ENTREZID
+
+#GO analysis for biological processes for genes upregulated in mPantr2 KO
+p2_up_go <- enrichGO(p2_up_ids, "org.Mm.eg.db", keyType = "ENTREZID", ont = "BP", readable = TRUE)
+pdf("../Plots/mPantr2 upregulated genes BP GO.pdf", width = 10, height = 5)
+barplot(p2_up_go, drop=TRUE, showCategory=20)
+dev.off()
+dotplot(p2_up_go)
+enrichMap(p2_up_go, n=20, fixed = TRUE, vertex.label.font = 1, vertex.label.cex = 0.3)
+plotGOgraph(p2_up_go)
+
+write.table(as.data.frame(p2_up_go),"p2_up_go_summary.txt", sep="\t")
+
+#import EntrezIDS for genes downregulated in mPantr2 KO
+p2_down <- bitr(diff.genes[diff.genes$estimate > 0,]$gene_short_name, fromType = "SYMBOL", toType = "ENTREZID", OrgDb="org.Mm.eg.db")
+p2_down_ids <- p2_down$ENTREZID
+
+#GO analysis for biological processes for genes downregulated in mPantr2 KO
+p2_down_go <- enrichGO(p2_down_ids, "org.Mm.eg.db", keyType = "ENTREZID", ont = "BP", readable = TRUE)
+pdf("../Plots/mPantr2 downregulated genes BP GO.pdf", width = 10, height = 5)
+barplot(p2_down_go, drop=TRUE, showCategory=20)
+dev.off()
+dotplot(p2_down_go)
+enrichMap(p2_down_go, n=20, fixed = TRUE, vertex.label.font = 1, vertex.label.cex = 0.3)
+plotGOgraph(p2_down_go)
+
+write.table(as.data.frame(p2_down_go),"../Tables/p2_down_go_summary.txt", sep="\t")
+```
+
+
+```{r Cell Cycle Analysis, tidy=T}
+#Subset pData by genotype
+cyc.wt<-pData(dat.cds[,pData(dat.cds)$genotype == "WT"])
+cyc.p2<-pData(dat.cds[,pData(dat.cds)$genotype == "Pantr2_KO"])
+
+kable(table(cyc.wt$cell_cyc)/sum(table(cyc.wt$cell_cyc))*100, col.names = c("Cell Cycle Stage", "Percent Cells"))
+
+pdf("../Plots/wt cell cycle pie.pdf", width = 5, height = 5)
+ggplot(as.data.frame((table(cyc.wt$cell_cyc)/sum(table(cyc.wt$cell_cyc)))*100), aes(x="", y=Freq, fill=Var1)) + geom_bar(width=1,stat = "identity") + coord_polar("y", start=0) + theme_bw() + labs(fill="Cell Cycle Stage", y= "Percent cells in cycle") + scale_fill_manual(values = c("red", "blue", "green"))
+dev.off()
+
+kable(table(cyc.p2$cell_cyc)/sum(table(cyc.p2$cell_cyc))*100, col.names = c("Cell Cycle Stage", "Percent Cells"))
+
+pdf("../Plots/p2KO cell cycle pie.pdf", width = 5, height = 5)
+ggplot(as.data.frame((table(cyc.p2$cell_cyc)/sum(table(cyc.p2$cell_cyc)))*100), aes(x="", y=Freq, fill=Var1)) + geom_bar(width=1,stat = "identity") + coord_polar("y", start=0) + theme_bw() + labs(fill="Cell Cycle Stage", y= "Percent cells in cycle") + scale_fill_manual(values = c("red", "blue", "green"))
+dev.off()
+
+#Subset pData by clone
+cyc.AX1<-pData(dat.cds[,pData(dat.cds)$clone == "AX1"])
+cyc.AX2<-pData(dat.cds[,pData(dat.cds)$clone == "AX2"])
+cyc.AW1<-pData(dat.cds[,pData(dat.cds)$clone == "AW1"])
+cyc.AW2<-pData(dat.cds[,pData(dat.cds)$clone == "AW2"])
+
+kable(table(cyc.AX1$cell_cyc)/sum(table(cyc.AX1$cell_cyc))*100, col.names = c("Cell Cycle Stage", "Percent Cells"))
+
+pdf("../Plots/AX1 cell cycle pie.pdf", width = 5, height = 5)
+ggplot(as.data.frame((table(cyc.AX1$cell_cyc)/sum(table(cyc.AX1$cell_cyc)))*100), aes(x="", y=Freq, fill=Var1)) + geom_bar(width=1,stat = "identity") + coord_polar("y", start=0) + theme_bw() + labs(fill="Cell Cycle Stage", y= "Percent cells in cycle") + scale_fill_manual(values = c("red", "blue", "green"))
+dev.off()
+
+kable(table(cyc.AX2$cell_cyc)/sum(table(cyc.AX2$cell_cyc))*100, col.names = c("Cell Cycle Stage", "Percent Cells"))
+
+pdf("../Plots/AX2 cell cycle pie.pdf", width = 5, height = 5)
+ggplot(as.data.frame((table(cyc.AX2$cell_cyc)/sum(table(cyc.AX2$cell_cyc)))*100), aes(x="", y=Freq, fill=Var1)) + geom_bar(width=1,stat = "identity") + coord_polar("y", start=0) + theme_bw() + labs(fill="Cell Cycle Stage", y= "Percent cells in cycle") + scale_fill_manual(values = c("red", "blue", "green"))
+dev.off()
+
+kable(table(cyc.AW1$cell_cyc)/sum(table(cyc.AW1$cell_cyc))*100, col.names = c("Cell Cycle Stage", "Percent Cells"))
+
+pdf("../Plots/AW1 cell cycle pie.pdf", width = 5, height = 5)
+ggplot(as.data.frame((table(cyc.AW1$cell_cyc)/sum(table(cyc.AW1$cell_cyc)))*100), aes(x="", y=Freq, fill=Var1)) + geom_bar(width=1,stat = "identity") + coord_polar("y", start=0) + theme_bw() + labs(fill="Cell Cycle Stage", y= "Percent cells in cycle") + scale_fill_manual(values = c("red", "blue", "green"))
+dev.off()
+
+kable(table(cyc.AW2$cell_cyc)/sum(table(cyc.AW2$cell_cyc))*100, col.names = c("Cell Cycle Stage", "Percent Cells"))
+
+pdf("../Plots/AW2 cell cycle pie.pdf", width = 5, height = 5)
+ggplot(as.data.frame((table(cyc.AW2$cell_cyc)/sum(table(cyc.AW2$cell_cyc)))*100), aes(x="", y=Freq, fill=Var1)) + geom_bar(width=1,stat = "identity") + coord_polar("y", start=0) + theme_bw() + labs(fill="Cell Cycle Stage", y= "Percent cells in cycle") + scale_fill_manual(values = c("red", "blue", "green"))
+dev.off()
+```
+
+```{r export for matrix, tidy = TRUE}
+#export expression matrix for use with scCoGAPS on MARCC
+exprs_matrix<-exprs(dat.cds[fData(dat.cds)$num_cells_expressed > 20 ,])
+exprs_matrix<-log10(as.matrix(exprs_matrix))
+
+#determine the percent sparsity of the exprs matrix
+sum(as.matrix(exprs(dat.cds)) == 0)/ prod(dim(as.matrix(exprs(dat.cds)))) #the matrix was found to be ~0.87 sparse
+
+#export expression matrix for use with NNLM::nnmf()
+write.table(exprs_matrix, file = "../Assets/exprs_matrix.mtx")
+```
+
+
+```{r NMF Patterns, tidy=TRUE}
+#load patterns from
+load("../Assets/mPantr2_scRNAseq_neurospheres_result_20_patterns.RData")
+
+pdf("../Plots/20_patterns.pdf", width = 50, height = 50)
+plotPatterns(dat.cds, result_20_patterns, nPatterns = c(1:20))
+dev.off()
+
+patternGenes(dat.cds, result, 10)
+
+load("../Assets/mPantr2_scRNAseq_neurospheres_result_80_patterns.RData")
+
+pdf("../Plots/80_patterns.pdf", width = 50, height = 50)
+plotPatterns(dat.cds, result_80_patterns, nPatterns = c(1:80))
+dev.off()
+
+patterns_80<-patternGenes(dat.cds, result_80_patterns, 25)
+```
+
+```{r, NMF}
+#find 20 patterns
+patterns_20<-nnmf(exprs_matrix, k = 20, verbose = 1, n.threads = 2)
+
+#
+
+
+```
+
+
+
+```{r Session Info, tidy=TRUE}
+sessionInfo()
+```
