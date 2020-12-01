@@ -1,4 +1,5 @@
 /Assets/
 /NMF/
 *.RData
-.*
+._*
+.DS_Store
